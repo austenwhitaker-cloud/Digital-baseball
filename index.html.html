@@ -1,0 +1,338 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <title>3D Arcade Baseball</title>
+  <style>
+    body {
+      margin: 0; padding: 0; background: #0f172a; color: #fff;
+      font-family: system-ui, -apple-system, sans-serif;
+      display: flex; justify-content: center; align-items: center; min-height: 100vh;
+      user-select: none;
+    }
+    #game-container {
+      position: relative; width: 800px; height: 500px;
+      background: #38bdf8; border: 4px solid #1e293b; border-radius: 12px;
+      overflow: hidden; box-shadow: 0 20px 25px -5px rgba(0,0,0,0.5);
+    }
+    canvas { display: block; }
+    
+    /* Enlarged Timing Meter */
+    #meter-container {
+      position: absolute; bottom: 20px; left: 50%; transform: translateX(-50%);
+      width: 550px; height: 40px; background: #0f172a; border: 3px solid #fff;
+      border-radius: 20px; overflow: hidden; display: none; /* Hidden during AI turns */
+    }
+    .zone { height: 100%; display: inline-block; float: left; }
+    .dark-red { background: #991b1b; width: 14%; }
+    .light-red { background: #f87171; width: 14%; }
+    .yellow { background: #facc15; width: 14%; }
+    .green { background: #22c55e; width: 16%; }
+    
+    #indicator-line {
+      position: absolute; top: 0; bottom: 0; width: 5px;
+      background: #ffffff; box-shadow: 0 0 10px #fff; left: 0%;
+    }
+    #ui-overlay {
+      position: absolute; top: 15px; left: 15px; right: 15px;
+      display: flex; justify-content: space-between; pointer-events: none;
+    }
+    .hud-box {
+      background: rgba(15,23,42,0.85); padding: 8px 16px; border-radius: 8px;
+      font-weight: bold; font-size: 15px; border: 1px solid rgba(255,255,255,0.1);
+    }
+    #stay-btn {
+      position: absolute; top: 15px; left: 15px;
+      padding: 8px 16px; font-weight: bold; background: #ffffff; color: #0f172a;
+      border: none; border-radius: 6px; cursor: pointer; display: none; z-index: 5;
+    }
+    #controls { position: absolute; bottom: 70px; left: 50%; transform: translateX(-50%); }
+    button.main-btn {
+      padding: 12px 28px; font-size: 18px; font-weight: 800; color: #fff;
+      background: #10b981; border: none; border-radius: 24px; cursor: pointer;
+    }
+    #message-banner {
+      position: absolute; top: 30%; left: 50%; transform: translate(-50%, -50%);
+      font-size: 38px; font-weight: 900; color: #facc15;
+      text-shadow: 0 4px 10px rgba(0,0,0,0.8); pointer-events: none; opacity: 0;
+      transition: opacity 0.2s; text-align: center; width: 100%;
+    }
+    #defense-modal {
+      position: absolute; inset: 0; background: rgba(15,23,42,0.92);
+      display: none; flex-direction: column; align-items: center; justify-content: center;
+      z-index: 10;
+    }
+    .pos-grid { display: grid; grid-template-columns: repeat(3, 1fr); gap: 10px; margin-top: 15px; }
+    .pos-btn { padding: 10px 14px; font-size: 14px; background: #3b82f6; border-radius: 8px; color: #fff; border: none; cursor: pointer; }
+  </style>
+</head>
+<body>
+
+<div id="game-container">
+  <canvas id="gameCanvas" width="800" height="500"></canvas>
+  <button id="stay-btn" onclick="triggerStay()">STAY</button>
+  <div id="ui-overlay">
+    <div></div>
+    <div class="hud-box" id="score-board">HOME: 0 | AWAY: 0</div>
+    <div class="hud-box" id="inning-board">TOP 1ST (OFFENSE)</div>
+    <div class="hud-box" id="count-board">B: 0 | S: 0 | O: 0</div>
+  </div>
+  <div id="message-banner">HOME RUN!</div>
+  <div id="controls"><button class="main-btn" id="ready-btn">READY!</button></div>
+  
+  <!-- 7-Zone Symmetrical Timing Meter -->
+  <div id="meter-container">
+    <div class="zone dark-red"></div>
+    <div class="zone light-red"></div>
+    <div class="zone yellow"></div>
+    <div class="zone green"></div>
+    <div class="zone yellow"></div>
+    <div class="zone light-red"></div>
+    <div class="zone dark-red"></div>
+    <div id="indicator-line"></div>
+  </div>
+
+  <div id="defense-modal">
+    <h2 style="color:#38bdf8">Choose Defensive Position</h2>
+    <div class="pos-grid">
+      <button class="pos-btn" onclick="selectDefense('Pitcher')">Pitcher</button>
+      <button class="pos-btn" onclick="selectDefense('1B Guard')">1B Guard</button>
+      <button class="pos-btn" onclick="selectDefense('2B Guard')">2B Guard</button>
+      <button class="pos-btn" onclick="selectDefense('3B Guard')">3B Guard</button>
+      <button class="pos-btn" onclick="selectDefense('LF Outfield')">Left Field</button>
+      <button class="pos-btn" onclick="selectDefense('RF Outfield')">Right Field</button>
+    </div>
+  </div>
+</div>
+
+<script>
+  const canvas = document.getElementById('gameCanvas');
+  const ctx = canvas.getContext('2d');
+  const readyBtn = document.getElementById('ready-btn');
+  const stayBtn = document.getElementById('stay-btn');
+  const meterContainer = document.getElementById('meter-container');
+  const line = document.getElementById('indicator-line');
+  const messageBanner = document.getElementById('message-banner');
+  const defenseModal = document.getElementById('defense-modal');
+
+  let gameState = 'READY_WAIT', side = 'OFFENSE', inning = 1, homeScore = 0, awayScore = 0;
+  let balls = 0, strikes = 0, outs = 0;
+  let isPlayerTurn = true;
+  let linePos = 0, lineDirection = 1, lineSpeed = 0.8;
+  let particles = [];
+
+  // Zoomed-In Camera Setup
+  const pitcher = { x: 400, y: 180 };
+  const batter = { x: 370, y: 410, swingAnim: 0 };
+  const runner = { x: 370, y: 410, targetX: 370, targetY: 410, active: false };
+  
+  // 5 AI Fielders (+1 Pitcher = 6 Roster)
+  const fielders = [
+    { name: '1B Guard', x: 580, y: 300 }, { name: '2B Guard', x: 400, y: 200 },
+    { name: '3B Guard', x: 220, y: 300 }, { name: 'LF Outfield', x: 180, y: 100 },
+    { name: 'RF Outfield', x: 620, y: 100 }
+  ];
+  let ball = { x: 400, y: 180, z: 0, vx: 0, vy: 0, vz: 0, active: false };
+
+  function updateMeter() {
+    if (gameState === 'METER_RUNNING' && isPlayerTurn) {
+      linePos += lineSpeed * lineDirection;
+      if (linePos >= 100) { linePos = 100; lineDirection = -1; }
+      else if (linePos <= 0) { linePos = 0; lineDirection = 1; }
+      line.style.left = linePos + '%';
+    }
+    requestAnimationFrame(updateMeter);
+  }
+  updateMeter();
+
+  function drawGame() {
+    ctx.clearRect(0, 0, canvas.width, canvas.height);
+    
+    // Zoomed Field Graphics
+    ctx.fillStyle = '#0284c7'; ctx.fillRect(0, 0, canvas.width, 80);
+    ctx.fillStyle = '#1e3a8a'; ctx.fillRect(0, 75, canvas.width, 15);
+
+    // Crowd
+    for (let i = 10; i < canvas.width; i += 12) {
+      ctx.fillStyle = (i % 24 === 0) ? '#f8fafc' : '#3b82f6';
+      ctx.beginPath(); ctx.arc(i, 70, 4, 0, Math.PI * 2); ctx.fill();
+    }
+
+    // Grass & Infield
+    ctx.fillStyle = '#15803d';
+    ctx.beginPath(); ctx.moveTo(0, 90); ctx.lineTo(canvas.width, 90); ctx.lineTo(canvas.width + 300, 500); ctx.lineTo(-300, 500); ctx.fill();
+    ctx.fillStyle = '#9a3412'; // Dirt Infield
+    ctx.beginPath(); ctx.moveTo(400, 150); ctx.lineTo(620, 310); ctx.lineTo(400, 470); ctx.lineTo(180, 310); ctx.closePath(); ctx.fill();
+
+    // Pitcher's Mound
+    ctx.fillStyle = '#7c2d12'; ctx.beginPath(); ctx.arc(400, 180, 20, 0, Math.PI * 2); ctx.fill();
+
+    // Fielders & Pitcher
+    fielders.forEach(f => drawPlayer(f.x, f.y, 0.8, '#dc2626'));
+    drawPlayer(pitcher.x, pitcher.y, 0.9, '#dc2626');
+
+    // Batter & Runner
+    if (!runner.active) {
+      drawPlayer(batter.x, batter.y, 1.4, '#2563eb', true, batter.swingAnim);
+    } else {
+      drawPlayer(runner.x, runner.y, 1.0, '#2563eb');
+    }
+
+    // Ball
+    if (ball.active) {
+      ctx.fillStyle = '#ffffff'; ctx.beginPath();
+      ctx.arc(ball.x, ball.y - ball.z, 6, 0, Math.PI * 2); ctx.fill();
+    }
+
+    // Particles
+    particles.forEach((p, index) => {
+      p.x += p.vx; p.y += p.vy; p.life--;
+      ctx.fillStyle = p.color; ctx.fillRect(p.x, p.y, 4, 4);
+      if (p.life <= 0) particles.splice(index, 1);
+    });
+
+    if (runner.active) updateBaseRunning();
+  }
+
+  function drawPlayer(x, y, scale, color, isBatter = false, swingAnim = 0) {
+    ctx.save(); ctx.translate(x, y); ctx.scale(scale, scale);
+    ctx.fillStyle = '#f8fafc'; ctx.fillRect(-6, 10, 5, 20); ctx.fillRect(1, 10, 5, 20);
+    ctx.fillStyle = color; ctx.fillRect(-8, -12, 16, 22);
+    ctx.fillStyle = '#d97706'; ctx.beginPath(); ctx.arc(0, -20, 6, 0, Math.PI * 2); ctx.fill();
+    ctx.fillStyle = color; ctx.beginPath(); ctx.arc(0, -22, 7, Math.PI, Math.PI * 2); ctx.fill();
+
+    if (isBatter) {
+      ctx.strokeStyle = '#d97706'; ctx.lineWidth = 6; ctx.beginPath();
+      let angle = -Math.PI / 3 - (swingAnim * Math.PI / 1.2);
+      ctx.moveTo(8, -10); ctx.lineTo(8 + Math.cos(angle) * 45, -10 + Math.sin(angle) * 45); ctx.stroke();
+    }
+    ctx.restore();
+  }
+
+  readyBtn.addEventListener('click', (e) => {
+    e.stopPropagation();
+    if (gameState === 'READY_WAIT') {
+      gameState = 'METER_RUNNING';
+      readyBtn.style.display = 'none';
+      if (isPlayerTurn) {
+        meterContainer.style.display = 'block';
+        showMessage('CLICK TO SWING!', '#38bdf8');
+      } else {
+        meterContainer.style.display = 'none'; // Hide meter for AI
+        setTimeout(handleAction, 1000);
+      }
+    }
+  });
+
+  function handleAction() {
+    if (gameState !== 'METER_RUNNING' && isPlayerTurn) return;
+    gameState = 'PITCHING'; hideMessage();
+
+    // Dynamic Pitching Variations (Speed & Curves)
+    let pitchType = Math.random();
+    let pitchSpeed = pitchType > 0.5 ? 35 : 50;
+
+    setTimeout(() => {
+      ball.x = pitcher.x; ball.y = pitcher.y; ball.z = 10; ball.active = true;
+      ball.vx = (Math.random() - 0.5) * 1.5; ball.vy = (410 - pitcher.y) / (pitchSpeed / 10);
+      
+      setTimeout(() => { 
+        batter.swingAnim = 1; 
+        evaluateSwing(); 
+      }, pitchSpeed * 8);
+    }, 300);
+  }
+
+  function evaluateSwing() {
+    let evalPos = isPlayerTurn ? linePos : Math.random() * 100; // AI uses skill odds
+
+    if (evalPos >= 43 && evalPos <= 57) { // Green: Home Run
+      showMessage('HOME RUN!', '#22c55e');
+      if (side === 'OFFENSE') homeScore++; else awayScore++;
+      ball.vy = -10; ball.vz = 9; resetPlay(3000);
+    } else if ((evalPos >= 28 && evalPos < 43) || (evalPos > 57 && evalPos <= 72)) { // Yellow: Base Hit
+      showMessage('BASE HIT!', '#facc15');
+      ball.vx = (Math.random() - 0.5) * 6; ball.vy = -3;
+      startBaseRunning();
+    } else if ((evalPos >= 14 && evalPos < 28) || (evalPos > 72 && evalPos <= 86)) { // Light Red: Caught Out
+      let target = fielders[Math.floor(Math.random() * fielders.length)];
+      ball.vx = (target.x - ball.x) / 25; ball.vy = (target.y - ball.y) / 25;
+      setTimeout(() => { outs++; showMessage(`CAUGHT OUT by ${target.name}!`, '#ef4444'); updateHUD(); resetPlay(2500); }, 600);
+    } else { // Dark Red: Strike
+      strikes++;
+      if (strikes >= 3) { outs++; strikes = 0; showMessage('STRIKE 3! OUT!', '#ef4444'); }
+      else { showMessage(`STRIKE ${strikes}!`, '#eab308'); }
+      updateHUD(); resetPlay(2000);
+    }
+  }
+
+  function startBaseRunning() {
+    runner.x = 370; runner.y = 410; runner.targetX = 580; runner.targetY = 300; // Head to 1B
+    runner.active = true; stayBtn.style.display = 'block';
+  }
+
+  function triggerStay() {
+    runner.targetX = runner.x; runner.targetY = runner.y; // Stop at current position
+    stayBtn.style.display = 'none';
+  }
+
+  function updateBaseRunning() {
+    let dx = runner.targetX - runner.x, dy = runner.targetY - runner.y;
+    let dist = Math.hypot(dx, dy);
+    if (dist > 3) {
+      runner.x += (dx / dist) * 3; runner.y += (dy / dist) * 3;
+    } else if (runner.targetX === 580) { // Reached 1B, attempt 2B automatically
+      runner.targetX = 400; runner.targetY = 200;
+    } else {
+      runner.active = false; stayBtn.style.display = 'none'; resetPlay(1000);
+    }
+  }
+
+  function resetPlay(delay) {
+    setTimeout(() => {
+      ball.active = false; batter.swingAnim = 0; meterContainer.style.display = 'none';
+      if (outs >= 3) switchSides();
+      else {
+        isPlayerTurn = !isPlayerTurn; // Alternate between player and AI teammates
+        gameState = 'READY_WAIT'; readyBtn.style.display = 'block';
+        if (!isPlayerTurn) readyBtn.click(); // Auto-start AI turn smoothly
+      }
+    }, delay);
+  }
+
+  function switchSides() {
+    outs = 0; strikes = 0; isPlayerTurn = true;
+    if (side === 'OFFENSE') {
+      side = 'DEFENSE'; defenseModal.style.display = 'flex';
+    } else {
+      side = 'OFFENSE'; inning++; gameState = 'READY_WAIT'; readyBtn.style.display = 'block'; updateHUD();
+    }
+  }
+
+  function selectDefense(pos) {
+    defenseModal.style.display = 'none'; gameState = 'READY_WAIT'; readyBtn.style.display = 'block'; updateHUD();
+  }
+
+  function updateHUD() {
+    document.getElementById('score-board').textContent = `HOME: ${homeScore} | AWAY: ${awayScore}`;
+    document.getElementById('inning-board').textContent = `${side === 'OFFENSE' ? 'TOP' : 'BOT'} ${inning} INNING (${side})`;
+    document.getElementById('count-board').textContent = `B: ${balls} | S: ${strikes} | O: ${outs}`;
+  }
+
+  function showMessage(text, color) { messageBanner.textContent = text; messageBanner.style.color = color; messageBanner.style.opacity = 1; }
+  function hideMessage() { messageBanner.style.opacity = 0; }
+
+  window.addEventListener('keydown', handleAction);
+  canvas.addEventListener('click', handleAction);
+
+  function loop() {
+    if (ball.active) {
+      ball.x += ball.vx; ball.y += ball.vy; ball.z += ball.vz;
+      if (ball.z > 0) ball.vz -= 0.2; else ball.z = 0;
+    }
+    drawGame(); requestAnimationFrame(loop);
+  }
+  loop();
+</script>
+</body>
+</html>
